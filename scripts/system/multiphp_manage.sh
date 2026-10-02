@@ -137,6 +137,42 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 
+# ── Lift the version pin for THIS install only ────────────────────────────────
+# install_LAMP.sh writes /etc/apt/preferences.d/php pinning every PHP version
+# except the panel's own to Pin-Priority: -1, which stops phpmyadmin's php-cli
+# dependency dragging in Debian's parallel PHP stack. -1 means "never install",
+# so it also made this feature impossible: `apt-get install php8.3-fpm` returned
+# "Package 'php8.3-fpm' has no installation candidate" on every fresh install
+# (reported as issue #24).
+#
+# A deliberate install is not the accident the pin exists to prevent, so allow
+# just the requested version for the duration of the run. APT uses the FIRST
+# matching entry in preferences.d file order, so this file must sort before
+# "php" — hence the 00- prefix. Verified: with it, 8.3 installs while 8.4, 8.2
+# and the php-cli virtual dependency all stay blocked.
+ALLOW_PIN="/etc/apt/preferences.d/00-inetpanel-multiphp-allow"
+cleanup_allow_pin() { rm -f "$ALLOW_PIN"; }
+
+if [[ "$ACTION" == "install" ]]; then
+    # Trap before writing, so an interrupt can never leave the pin weakened.
+    trap cleanup_allow_pin EXIT INT TERM
+    cat > "$ALLOW_PIN" << ALLOWEOF
+# Temporary — written by inetp multiphp_manage for a deliberate install of
+# PHP ${VERSION}, and removed when it finishes. If this file is still here, a
+# previous run was killed; it is safe to delete.
+Package: php${VERSION}*
+Pin: origin packages.sury.org
+Pin-Priority: 600
+ALLOWEOF
+    chmod 0644 "$ALLOW_PIN"
+
+    # Refresh the lists. sury publishes new builds constantly, and a box whose
+    # index predates the requested version sees the same "no installation
+    # candidate" error for an entirely different reason. Non-fatal: a single
+    # unrelated broken repo must not block the install.
+    apt-get update -o Dir::Etc::sourceparts=/etc/apt/sources.list.d < /dev/null >/dev/null 2>&1 || true
+fi
+
 # Run apt — retry once if dpkg was interrupted
 for attempt in 1 2; do
     dpkg --configure -a < /dev/null 2>/dev/null || true
